@@ -1,141 +1,175 @@
-# 💸 APForecast Engine
-A Machine-Learning Driven Cash Forecasting System for Accounts Payable.
+# 💸 APForecast Engine  
+### A Machine-Learning Driven Cash Forecasting System for Accounts Payable
 
-This system eliminates the "Cash Blind Spot" by predicting exactly when checks will clear the bank. Instead of relying on static "Due Dates," it uses Bayesian Survival Analysis to calculate the daily clearing probability for every open check based on historical vendor behavior.
+APForecast eliminates the **“Cash Blind Spot”** in Accounts Payable by predicting **exactly when checks will clear the bank**.
 
-# 📂 Project Structure
+Instead of relying on static due dates, the system uses **probabilistic modeling (Bayesian-style survival logic)** to compute a **daily clearing probability for every open check**, based on real historical vendor behavior.
 
+This enables finance teams to know **how much cash is actually required today**, not just what is theoretically due.
 
+---
+
+## ✨ Key Features
+
+- 📈 Vendor-specific clearing probability curves  
+- 🧠 Persistent historical ledger (“Brain”) across days  
+- 📊 Daily Excel forecast reports  
+- 📉 Vendor behavior visualizations  
+- ⚙️ Manual override rules for special vendors  
+- 🖥️ Streamlit dashboard + CLI mode  
+- 🧩 Handles new vendors via intelligent cohorting  
+
+---
+
+## 📂 Project Structure
+
+```
 APForecast/
 │
 ├── data/
 │   ├── raw/
-│   │   ├── history/            # Place your historical "Cleared Checks.xlsx" here
-│   │   └── DD-MM-YYYY/         # Daily folder created automatically (e.g., 16-01-2026)
+│   │   ├── history/                # Historical cleared checks (one-time setup)
+│   │   └── DD-MM-YYYY/             # Daily run folder (auto-created)
+│   │       └── Outstanding Checks.xlsx
+│   │
 │   ├── processed/
-│   │   └── master_ledger.parquet # The "Brain" (Long-term memory of all transactions)
+│   │   └── master_ledger.parquet   # Long-term memory ("Brain")
+│   │
 │   └── config/
-│       └── vendor_strategy_overrides.xlsx # The "Rule Book" (User Overrides)
+│       └── vendor_strategy_overrides.xlsx  # Manual rules ("Rule Book")
 │
 ├── reports/
-│   ├── forecast_DD-MM-YYYY.xlsx  # The Daily Excel Report
-│   └── plots/                    # The Visual graphs (Vendor Behavior)
+│   ├── forecast_DD-MM-YYYY.xlsx    # Daily forecast output
+│   └── plots/                      # Vendor behavior graphs
 │
 ├── src/
-│   └── apforecast/               # Source Code (Engine, Logic, Math)
+│   └── apforecast/
+│       ├── core/                   # Dates, constants, utilities
+│       ├── ingestion/              # File loaders & cleaners
+│       ├── engine/                 # Forecast logic
+│       ├── models/                 # Probability & survival models
+│       └── main.py                 # CLI entry point
 │
-├── app.py                        # The Streamlit Dashboard (Front-End)
-├── create_config.py              # Script to generate the Overrides Template
-└── requirements.txt              # Python dependencies
+├── app.py                          # Streamlit dashboard
+├── create_config.py                # Generates override template
+├── requirements.txt
+└── README.md
+```
 
-# 🚀 Getting Started
-1. Installation
-Ensure you have Python 3.10+ installed.
+---
 
-Bash
+## 🚀 Getting Started
 
-## Install required libraries
+### 1️⃣ Installation
+
+Ensure **Python 3.10+** is installed.
+
+```bash
+pip install -r requirements.txt
+```
+
+If installing manually:
+
+```bash
 pip install pandas numpy pyarrow openpyxl xlsxwriter seaborn matplotlib streamlit
-2. One-Time Setup
+```
 
-A. Initialize the "Brain" (History)
+---
 
-Place your historical cleared checks file in data/raw/history/.
+## 🧠 One-Time Setup
 
-Supported formats: .xlsx or .csv.
+### A. Initialize the History (“Brain”)
 
-Important: Ensure headers match the mapping in src/apforecast/core/constants.py.
+1. Place your historical cleared checks file in:
 
-B. Generate the "Rule Book" (Overrides) Run this script to create the configuration file for manual rules:
+```
+data/raw/history/
+```
 
-Bash
-`
+2. Supported formats:
+- `.xlsx`
+- `.csv`
+
+3. Ensure column headers match the mapping in:
+
+```
+src/apforecast/core/constants.py
+```
+
+---
+
+### B. Generate the Override Rule Book
+
+Run once:
+
+```bash
 python create_config.py
-`
+```
 
-This creates data/config/vendor_strategy_overrides.xlsx.
+This creates:
 
-Edit this Excel file to set fixed rules (e.g., "Always clears on Fridays").
+```
+data/config/vendor_strategy_overrides.xlsx
+```
 
-# 🖥️ How to Run (The Workflow)
-Option A: The Dashboard (Recommended)
-The easiest way to run the system is via the visual interface.
+Use this file to define **manual vendor rules**, such as:
+- Fixed clearing lag
+- Specific clearing weekdays
 
-Bash
-`
+---
+
+## 🖥️ How to Run
+
+### Option A: Streamlit Dashboard (Recommended)
+
+```bash
 streamlit run app.py
-`
-Tab 1: History Setup: Upload your history file once to train the model.
+```
 
-Tab 2: Daily Forecast:
+**Tabs**
+- History Setup
+- Daily Forecast
+- Vendor Intelligence
 
-Select Today's Date.
+---
 
-Upload your Outstanding Checks file.
+### Option B: Command Line (Headless)
 
-(Optional) Upload yesterday's Cleared Checks file to update the brain.
+```bash
+python -m src.apforecast.main --date DD-MM-YYYY
+```
 
-Click RUN FORECAST.
+---
 
-Tab 3: Vendor Intelligence: Inspect specific vendor behavior graphs.
+## 🧠 Forecast Logic (3-Step Waterfall)
 
-Option B: The Command Line (Headless)
-For automation or servers.
+1. **User Overrides** – Absolute rules  
+2. **Vendor History** – Learned probability curves  
+3. **Global Cohorts** – Size-based fallback behavior  
 
-Prepare Folders:
+---
 
-Create data/raw/16-01-2026/.
+## 📊 Outputs
 
-Put Outstanding Checks.xlsx inside.
+- **Cash Requirement**: Expected cash needed today  
+- **Excel Report**: Line-by-line clearing probabilities  
+- **Visuals**: Vendor clearing behavior plots  
 
-Run:
+---
 
-Bash
-`
-python -m src.apforecast.main --date 16-01-2026
-`
+## 🔧 Column Mapping
 
-# 🧠 How It Works (The Logic)
-The engine decides the probability of a check clearing using a 3-Step Waterfall:
+Edit:
+```
+src/apforecast/core/constants.py
+```
 
-User Override (The Law):
-
-Checks vendor_strategy_overrides.xlsx.
-
-Example: "Vendor X is set to FIXED_LAG of 7 days." -> Probability = 100% on Day 7.
-
-Specific History (The Specialist):
-
-If the vendor has >5 historical transactions, the system builds a unique probability curve.
-
-Example: "Cintas typically clears in 4-6 days."
-
-Global Cohort (The Safety Net):
-
-If the vendor is new, they are assigned a profile based on check size.
-
-Small (<$10k): Fast clearing profile.
-
-Medium ($10k-$50k): Volatile profile.
-
-Large (>$50k): Slow clearing profile ("The Lazy Giant").
-
-# 📊 The Output
-Cash Requirement: A specific dollar amount needed to fund the account today.
-
-Excel Report: A detailed file (reports/forecast_<date>.xlsx) listing every open check and its specific probability of clearing.
-
-Visuals: Reference graphs showing the historical behavior of your vendors.
-
-# 🔧 Configuration (Column Mapping)
-To match your specific file headers, edit src/apforecast/core/constants.py:
-
-Python
-
+```python
 COLUMN_MAP = {
-    "Your File Header Name" : "Check_ID",
-    "Another Header"        : "Vendor_ID",
-    "Payment Amount"        : "Amount",
-    ...
+    "Your Excel Header": "System_Field_Name"
 }
-Note: The Right Side (System Names) must not change. Only change the Left Side to match your Excel files.
+```
+
+⚠️ Do not change system field names (right-hand side).
+
+---
