@@ -1,145 +1,96 @@
 # src/apforecast/modeling/engine.py
-
-from collections import defaultdict
-from datetime import date
-
 import pandas as pd
+import numpy as np
+from src.apforecast.core.constants import *
+from src.apforecast.modeling.probability import BayesianModel
+from src.apforecast.modeling.cohorts import determine_cohort
 
-from apforecast.core.constants import (
-    COHORT_THRESHOLDS,
-    MIN_HISTORY_FOR_SPECIFIC_MODEL,
-    FORECAST_HORIZON_DAYS,
-)
-from apforecast.modeling.cohorts import assign_cohort
-from apforecast.modeling.probability import (
-    build_ecdf,
-    conditional_clear_probability,
-)
+class ForecastEngine:
+    def __init__(self, ledger, overrides):
+        self.ledger = ledger
+        self.overrides = overrides
+        self.models = self._train_models()
 
+    def _train_models(self):
+        """
+        Builds BayesianModels for:
+        1. Every specific Vendor (if history >= 5)
+        2. The 3 Global Cohorts
+        """
+        models = {'SPECIFIC': {}, 'GLOBAL': {}}
+        cleared = self.ledger[self.ledger[COL_STATUS] == STATUS_CLEARED]
 
-# ---------------------------------
-# Model Builder
-# ---------------------------------
+        # 1. Train Specific Models
+        vendor_counts = cleared[COL_VENDOR_ID].value_counts()
+        valid_vendors = vendor_counts[vendor_counts >= 5].index
+        
+        for v_id in valid_vendors:
+            data = cleared[cleared[COL_VENDOR_ID] == v_id][COL_DAYS_TO_SETTLE].values
+            models['SPECIFIC'][v_id] = BayesianModel(data)
 
-def build_probability_models(ledger_df: pd.DataFrame):
-    """
-    Build all ECDF models from cleared checks.
-    Returns:
-        vendor_models: dict[vendor_id -> cdf_fn]
-        cohort_models: dict[cohort -> cdf_fn]
-    """
+        # 2. Train Global Cohorts
+        for cohort in [COHORT_SMALL, COHORT_MEDIUM, COHORT_LARGE]:
+            # Filter ledger by amount bucket
+            # (In a real run, you'd add a 'Cohort' column to the ledger to speed this up)
+            # Here we map on the fly for simplicity
+            mask = cleared[COL_AMOUNT].apply(determine_cohort) == cohort
+            data = cleared[mask][COL_DAYS_TO_SETTLE].values
+            models['GLOBAL'][cohort] = BayesianModel(data)
+            
+        return models
 
-    cleared = ledger_df[
-        (ledger_df["status"] == "CLEARED")
-        & ledger_df["days_to_settle"].notna()
-    ]
+    def predict_check(self, check_row, forecast_date):
+        """
+        Applies Logic Hierarchy: Override -> Specific -> Global
+        """
+        vendor_id = check_row[COL_VENDOR_ID]
+        amount = check_row[COL_AMOUNT]
+        post_date = check_row[COL_POST_DATE]
+        
+        # Calculate current age t
+        age = (forecast_date - post_date).days
+        
+        # CHECK 1: USER OVERRIDE
+        if vendor_id in self.overrides:
+            rule = self.overrides[vendor_id]
+            strategy = rule['Strategy']
+            p1 = rule['Param_1']
+            p2 = rule['Param_2']
 
-    # -------------------------
-    # Vendor-specific models
-    # -------------------------
+            if strategy == STRAT_HOLD:
+                return 0.0
+            
+            if strategy == STRAT_PROB_OVERRIDE:
+                return float(p1)
 
-    vendor_days = defaultdict(list)
+            if strategy == STRAT_FIXED_LAG:
+                # If age is exactly lag, it clears. If age > lag, it's late (high prob).
+                lag = int(p1)
+                return 1.0 if age >= lag else 0.0
 
-    for _, row in cleared.iterrows():
-        if row["vendor_id"]:
-            vendor_days[row["vendor_id"]].append(row["days_to_settle"])
+            if strategy == STRAT_EXACT_DATE:
+                target_date = pd.to_datetime(p1)
+                return 1.0 if forecast_date == target_date else 0.0
 
-    vendor_models = {}
-    for vendor_id, days in vendor_days.items():
-        if len(days) >= MIN_HISTORY_FOR_SPECIFIC_MODEL:
-            vendor_models[vendor_id] = build_ecdf(days)
+            if strategy == STRAT_WEEKDAY:
+                target_day = str(p1).title() # e.g. "Friday"
+                prob_weight = float(p2) if p2 else 0.9
+                # If tomorrow is the target day?
+                # Actually, we are forecasting if it clears TODAY (forecast_date).
+                if forecast_date.day_name() == target_day:
+                    return prob_weight
+                else:
+                    return 0.1 # Low chance on wrong day
 
-    # -------------------------
-    # Cohort models
-    # -------------------------
+        # CHECK 2: SPECIFIC HISTORY
+        if vendor_id in self.models['SPECIFIC']:
+            model = self.models['SPECIFIC'][vendor_id]
+            return model.predict_survival_probability(age)
 
-    cohort_days = defaultdict(list)
-
-    for _, row in cleared.iterrows():
-        cohort = assign_cohort(row["amount"])
-        cohort_days[cohort].append(row["days_to_settle"])
-
-    cohort_models = {
-        cohort: build_ecdf(days)
-        for cohort, days in cohort_days.items()
-        if days
-    }
-
-    return vendor_models, cohort_models
-
-
-# ---------------------------------
-# Strategy Selector
-# ---------------------------------
-
-def forecast_open_checks(
-    ledger_df: pd.DataFrame,
-    vendor_models: dict,
-    cohort_models: dict,
-    override_rules: dict,
-    run_date: date,
-    window: int = 1,
-):
-    """
-    Apply hybrid strategy to OPEN checks and compute probabilities.
-    """
-
-    open_df = ledger_df[ledger_df["status"] == "OPEN"].copy()
-
-    results = []
-
-    for idx, row in open_df.iterrows():
-        vendor_id = row["vendor_id"]
-        amount = row["amount"]
-        age = (run_date - row["post_date"]).days
-
-        # -------------------------
-        # Priority 1: Overrides
-        # -------------------------
-
-        if vendor_id in override_rules:
-            rule = override_rules[vendor_id]
-            prob = rule(age, run_date)
-            strategy = "OVERRIDE"
-
-        # -------------------------
-        # Priority 2: Vendor history
-        # -------------------------
-
-        elif vendor_id in vendor_models:
-            cdf_fn = vendor_models[vendor_id]
-            prob = conditional_clear_probability(
-                cdf_fn, age, window
-            )
-            strategy = "SPECIFIC"
-
-        # -------------------------
-        # Priority 3: Cohort model
-        # -------------------------
-
-        else:
-            cohort = assign_cohort(amount)
-            cdf_fn = cohort_models.get(cohort)
-
-            if cdf_fn:
-                prob = conditional_clear_probability(
-                    cdf_fn, age, window
-                )
-            else:
-                prob = 0.0
-
-            strategy = "COHORT"
-
-        results.append({
-            "forecast_probability": prob,
-            "expected_outflow": amount * prob,
-            "strategy_used": strategy,
-        })
-
-    result_df = pd.DataFrame(results, index=open_df.index)
-
-    for col in result_df.columns:
-        open_df[col] = result_df[col]
-
-    return open_df
-
+        # CHECK 3: GLOBAL COHORT
+        cohort = determine_cohort(amount)
+        model = self.models['GLOBAL'].get(cohort)
+        if model:
+            return model.predict_survival_probability(age)
+        
+        return 0.5 # Fallback if no data exists at all

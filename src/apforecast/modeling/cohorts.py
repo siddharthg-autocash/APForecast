@@ -1,17 +1,10 @@
 # src/apforecast/modeling/cohorts.py
+from src.apforecast.core.constants import *
 
-from apforecast.core.constants import COHORT_THRESHOLDS
-
-
-def assign_cohort(amount: float) -> str:
-    """
-    Assign check to a global cohort based on amount.
-    """
-
-    if amount <= COHORT_THRESHOLDS["SMALL_MAX"]:
-        return "STABLE"
-
-    if amount <= COHORT_THRESHOLDS["MED_MAX"]:
-        return "VOLATILE"
-
-    return "LAZY"
+def determine_cohort(amount):
+    if amount < THRESHOLD_SMALL:
+        return COHORT_SMALL
+    elif amount < THRESHOLD_LARGE:
+        return COHORT_MEDIUM
+    else:
+        return COHORT_LARGE

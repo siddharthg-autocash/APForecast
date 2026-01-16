@@ -1,40 +1,36 @@
 # src/apforecast/ingestion/loader.py
+import pandas as pd
+import os
+from src.apforecast.core.constants import COLUMN_MAP
 
-from pathlib import Path
-
-# Allow either CSV or XLSX for each required input
-REQUIRED_INPUTS = {
-    "bank_cleared": {".csv", ".xlsx"},
-    "issued_checks": {".csv", ".xlsx"},
-}
-
-
-def get_raw_data_dir(base_path: Path, run_date_str: str) -> Path:
+def load_file_smart(filepath):
     """
-    Resolve and validate the raw data directory for a given run date.
-    Accepts either CSV or XLSX inputs.
+    Reads CSV or Excel. Renames columns based on constants.py map.
     """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
 
-    raw_dir = base_path / "data" / "raw" / run_date_str
+    # Auto-detect format
+    if filepath.endswith('.csv'):
+        df = pd.read_csv(filepath)
+    else:
+        # Defaults to Excel for xlsx, xls
+        df = pd.read_excel(filepath)
 
-    if not raw_dir.exists():
-        raise FileNotFoundError(
-            f"Raw data directory not found: {raw_dir}"
-        )
-
-    files = {p.name for p in raw_dir.iterdir() if p.is_file()}
-
-    missing = []
-
-    for base_name, exts in REQUIRED_INPUTS.items():
-        if not any(f"{base_name}{ext}" in files for ext in exts):
-            missing.append(
-                f"{base_name}{list(exts)}"
-            )
-
-    if missing:
-        raise FileNotFoundError(
-            f"Missing required files in {raw_dir}: {missing}"
-        )
-
-    return raw_dir
+    # Normalize Columns (Map User headers to System headers)
+    # We invert the map to rename: {User_Col: System_Col}
+    rename_dict = {v: k for k, v in COLUMN_MAP.items()} 
+    # Wait, the map in constants is {User_Name : System_Name} ?? 
+    # Let's assume the user edits constants.py to be: "Check Number": "Check_ID"
+    # So we simply pass COLUMN_MAP.
+    
+    # Actually, standardizing the map in constants:
+    # Let's rely on the user putting correct keys in COLUMN_MAP.
+    # Current CONSTANTS structure: {"User_Header": "System_Internal_Name"}
+    
+    df.rename(columns=COLUMN_MAP, inplace=True)
+    
+    # Strip whitespace from string columns
+    df.columns = [c.strip() for c in df.columns]
+    
+    return df

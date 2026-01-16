@@ -1,106 +1,63 @@
 # src/apforecast/main.py
-
 import argparse
-from pathlib import Path
 import pandas as pd
-import pyarrow.parquet as pq
-from apforecast.ingestion.loader import get_raw_data_dir
+import os
+from src.apforecast.core.constants import *
+from src.apforecast.core.config_loader import load_vendor_overrides
+from src.apforecast.ingestion.reconciler import ingest_and_reconcile
+from src.apforecast.modeling.engine import ForecastEngine
+from src.apforecast.reporting.dashboard import generate_report
+# --- CHANGE 3: Import Visuals ---
+from src.apforecast.reporting.visuals import plot_model_curves 
 
+def main():
+    parser = argparse.ArgumentParser(description="APForecast System")
+    parser.add_argument("--date", type=str, required=True, help="Run date (DD-MM-YYYY)")
+    args = parser.parse_args()
+    
+    run_date_str = args.date
+    run_date = pd.to_datetime(run_date_str, format="%d-%m-%Y")
+    
+    print(f"--- Starting APForecast for {run_date_str} ---")
 
-
-from apforecast.core.dates import parse_run_date, age_in_days
-from apforecast.core.constants import (
-    MASTER_LEDGER_SCHEMA,
-    FORECAST_HORIZON_DAYS,
-)
-from apforecast.core.config_loader import load_vendor_overrides
-from apforecast.ingestion.reconciler import reconcile
-from apforecast.modeling.engine import (
-    build_probability_models,
-    forecast_open_checks,
-)
-from apforecast.reporting.dashboard import (
-    build_forecast_dashboard,
-    export_dashboard,
-)
-from apforecast.reporting.alerts import generate_alerts
-
-
-def main(run_date_str: str):
-    run_date = parse_run_date(run_date_str)
-
-    base = Path(__file__).resolve().parents[2]
-    raw_dir = get_raw_data_dir(base, run_date_str)
-    ledger_path = base / "data" / "processed" / "master_ledger.parquet"
-    overrides_path = base / "data" / "config" / "vendor_strategy_overrides.xlsx"
-
-    # -------------------------
-    # Step 1: Reconciliation
-    # -------------------------
-    reconcile(run_date, raw_dir, ledger_path)
-
-    # -------------------------
-    # Load ledger
-    # -------------------------
-    ledger_df = pq.read_table(
-        ledger_path,
-        schema=MASTER_LEDGER_SCHEMA
-    ).to_pandas()
-
-    # compute age for OPEN checks
-    ledger_df.loc[
-        ledger_df["status"] == "OPEN",
-        "current_age_days"
-    ] = ledger_df.loc[
-        ledger_df["status"] == "OPEN",
-        "post_date"
-    ].apply(lambda d: age_in_days(d, run_date))
-
-    # -------------------------
-    # Step 2: Modeling
-    # -------------------------
-    vendor_models, cohort_models = build_probability_models(ledger_df)
-    override_rules = load_vendor_overrides(overrides_path)
-
-    forecast_df = forecast_open_checks(
-        ledger_df,
-        vendor_models,
-        cohort_models,
-        override_rules,
-        run_date,
-        window=1,
-    )
-
-    # merge results back
-    ledger_df.update(forecast_df)
-
-    # -------------------------
-    # Step 3: Reporting
-    # -------------------------
-    dashboard = build_forecast_dashboard(
-        forecast_df,
-        run_date,
-        FORECAST_HORIZON_DAYS,
-    )
-
-    output_file = base / f"Forecast_Report_{run_date_str}.xlsx"
-
-
-    export_dashboard(dashboard, output_file)
-
-    # -------------------------
-    # Step 4: Alerts
-    # -------------------------
-    alerts = generate_alerts(ledger_df)
-
-    print("Forecast generated:", output_file)
-    print("Zombie checks:", len(alerts["zombie_checks"]))
-    print("Large checks:", len(alerts["large_checks"]))
-
+    # 1. Ingest & Reconcile (Now handles .xlsx)
+    ledger = ingest_and_reconcile(run_date_str, run_date)
+    
+    # 2. Load Config Overrides
+    overrides = load_vendor_overrides()
+    
+    # 3. Initialize Engine (Training)
+    engine = ForecastEngine(ledger, overrides)
+    
+    # --- CHANGE 4: Generate Reference Graphs ---
+    # This will create the PNGs for every vendor/cohort
+    plot_model_curves(engine.models, run_date_str)
+    
+    # 4. Forecast Loop
+    open_checks = ledger[ledger[COL_STATUS] == STATUS_OPEN].copy()
+    print(f"Forecasting for {len(open_checks)} open checks...")
+    
+    results = []
+    for _, row in open_checks.iterrows():
+        prob = engine.predict_check(row, run_date)
+        expected_cash = row[COL_AMOUNT] * prob
+        
+        results.append({
+            COL_CHECK_ID: row[COL_CHECK_ID],
+            COL_VENDOR_ID: row[COL_VENDOR_ID],
+            COL_AMOUNT: row[COL_AMOUNT],
+            COL_POST_DATE: row[COL_POST_DATE],
+            'Probability': round(prob, 4),
+            'Expected_Cash': round(expected_cash, 2)
+        })
+        
+    forecast_df = pd.DataFrame(results)
+    
+    # 5. Report
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    generate_report(forecast_df, run_date_str)
+    
+    print("--- Process Complete ---")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--date", required=True)
-    args = parser.parse_args()
-
-    main(args.date)
+    main()

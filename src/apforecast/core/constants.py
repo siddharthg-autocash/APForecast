@@ -1,53 +1,54 @@
 # src/apforecast/core/constants.py
 
-import pyarrow as pa
+# Paths
+DATA_DIR = "data"
+RAW_DIR = f"{DATA_DIR}/raw"
+PROCESSED_DIR = f"{DATA_DIR}/processed"
+CONFIG_DIR = f"{DATA_DIR}/config"
+REPORTS_DIR = "reports"
 
-# Master Ledger Schema
+MASTER_LEDGER_PATH = f"{PROCESSED_DIR}/master_ledger.parquet"
+CONFIG_FILE_PATH = f"{CONFIG_DIR}/vendor_strategy_overrides.xlsx"
 
-MASTER_LEDGER_SCHEMA = pa.schema([
-    # Identity
-    pa.field("check_id", pa.string(), nullable=False),
+# --- COLUMN MAPPING (CRITICAL) ---
+# Format: "Your_File_Column_Name": "System_Name"
+# UPDATE THE LEFT SIDE to match your CSV headers exactly!
+# src/apforecast/core/constants.py
 
-    # Raw bank fields
-    pa.field("status", pa.string(), nullable=False),          # OPEN / CLEARED
-    pa.field("check_type", pa.string()),
-    pa.field("source", pa.string()),
-    pa.field("post_date", pa.date32(), nullable=False),
-    pa.field("amount", pa.float64(), nullable=False),
-    pa.field("reference", pa.string()),
-    pa.field("bacs_reference", pa.string()),
-    pa.field("positive_pay", pa.bool_()),
-    pa.field("is_void", pa.bool_()),
-    pa.field("is_balanced", pa.bool_()),
-
-    # Clearing info
-    pa.field("cleared_flag", pa.bool_()),
-    pa.field("cleared_date", pa.date32()),
-
-    # Derived / forecasting fields
-    pa.field("days_to_settle", pa.int32()),       # only if CLEARED
-    pa.field("current_age_days", pa.int32()),     # only if OPEN
-    pa.field("vendor_id", pa.string()),
-    pa.field("vendor_name", pa.string()),
-    pa.field("cohort", pa.string()),               # STABLE / VOLATILE / LAZY
-    pa.field("strategy_used", pa.string()),        # OVERRIDE / SPECIFIC / COHORT
-    pa.field("forecast_probability", pa.float64()),
-    pa.field("expected_outflow", pa.float64()),
-
-    # Audit
-    pa.field("last_updated_run", pa.date32(), nullable=False),
-])
-
-
-
-# Modeling Constants
-
-
-COHORT_THRESHOLDS = {
-    "SMALL_MAX": 10_000,
-    "MED_MAX": 50_000,
+COLUMN_MAP = {
+    # "YOUR FILE HEADER"   : "SYSTEM INTERNAL NAME" (Do not change right side!)
+    "Check #"              : "Check_ID",
+    "Reference"            : "Vendor_ID",
+    "Amount"               : "Amount",
+    "Post Date"            : "Post_Date",  # Assuming your file header IS "Post_Date"
+    "Cleared Date"           : "Clear_Date"  # Assuming your file header IS "Clear_Date"
 }
 
-MIN_HISTORY_FOR_SPECIFIC_MODEL = 5
-FORECAST_HORIZON_DAYS = 7
-ZOMBIE_CHECK_AGE_DAYS = 45
+# Internal System Column Names (Do Not Change These)
+COL_CHECK_ID = "Check_ID"
+COL_VENDOR_ID = "Vendor_ID"
+COL_AMOUNT = "Amount"
+COL_POST_DATE = "Post_Date"
+COL_CLEAR_DATE = "Clear_Date"
+COL_STATUS = "Status"
+COL_DAYS_TO_SETTLE = "Days_to_Settle"
+
+# Statuses
+STATUS_OPEN = "OPEN"
+STATUS_CLEARED = "CLEARED"
+STATUS_VOID = "VOID"
+
+# Cohorts
+THRESHOLD_SMALL = 10000
+THRESHOLD_LARGE = 50000
+COHORT_SMALL = "STABLE_SMALL"
+COHORT_MEDIUM = "VOLATILE_MED"
+COHORT_LARGE = "LAZY_GIANT"
+
+# Strategies
+STRAT_FIXED_LAG = "FIXED_LAG"
+STRAT_WEEKDAY = "WEEKDAY"
+STRAT_EXACT_DATE = "EXACT_DATE"
+STRAT_HOLD = "HOLD"
+STRAT_PROB_OVERRIDE = "PROBABILITY_OVERRIDE"
+STRAT_DEFAULT = "DEFAULT"
