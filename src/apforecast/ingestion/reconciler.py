@@ -14,16 +14,20 @@ from apforecast.core.constants import MASTER_LEDGER_SCHEMA
 # Helpers
 # -----------------------------
 
+def _to_bool(val):
+    if pd.isna(val):
+        return False
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in {"yes", "y", "true", "1"}
+
+
 def _parse_date(val):
     if pd.isna(val):
         return None
     return pd.to_datetime(val).date()
 
-
 def _standardize_raw(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normalize raw bank / ERP columns into ledger-compatible names.
-    """
     df = df.rename(columns={
         "Check #": "check_id",
         "Status": "status",
@@ -40,7 +44,13 @@ def _standardize_raw(df: pd.DataFrame) -> pd.DataFrame:
         "Cleared Date": "cleared_date",
     })
 
-    # normalize dates
+    # enforce schema types
+    df["check_id"] = df["check_id"].astype(str)
+
+    for col in ["is_void", "is_balanced", "cleared_flag", "positive_pay"]:
+        if col in df.columns:
+            df[col] = df[col].apply(_to_bool)
+
     df["post_date"] = df["post_date"].apply(_parse_date)
     if "cleared_date" in df:
         df["cleared_date"] = df["cleared_date"].apply(_parse_date)
@@ -48,13 +58,19 @@ def _standardize_raw(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+
 def _empty_ledger() -> pa.Table:
     """
-    Create an empty master ledger with the correct schema.
+    Create an empty master ledger table with the correct schema.
     """
-    empty_df = pd.DataFrame({field.name: [] for field in MASTER_LEDGER_SCHEMA})
-    return pa.Table.from_pandas(empty_df, schema=MASTER_LEDGER_SCHEMA)
-
+    arrays = [
+        pa.array([], type=field.type)
+        for field in MASTER_LEDGER_SCHEMA
+    ]
+    return pa.Table.from_arrays(
+        arrays,
+        schema=MASTER_LEDGER_SCHEMA
+    )
 
 # -----------------------------
 # Main Reconciliation Logic
@@ -79,11 +95,12 @@ def reconcile(run_date: date, raw_dir: Path, ledger_path: Path):
     # Load daily files
     # -------------------------
 
-    cleared_fp = raw_dir / "bank_cleared.csv"
-    issued_fp = raw_dir / "issued_checks.csv"
+    cleared_fp = raw_dir / "bank_cleared.xlsx"
+    issued_fp = raw_dir / "issued_checks.xlsx"
 
-    cleared_df = _standardize_raw(pd.read_csv(cleared_fp))
-    issued_df = _standardize_raw(pd.read_csv(issued_fp))
+    cleared_df = _standardize_raw(pd.read_excel(cleared_fp))
+    issued_df = _standardize_raw(pd.read_excel(issued_fp))
+
 
     # remove void checks early
     cleared_df = cleared_df[cleared_df["is_void"] != True]

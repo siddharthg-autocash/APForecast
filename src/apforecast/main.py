@@ -83,9 +83,8 @@ def main(run_date_str: str):
         FORECAST_HORIZON_DAYS,
     )
 
-    output_file = (
-        base / "Forecast_Report_" + run_date_str + ".xlsx"
-    )
+    output_file = base / f"Forecast_Report_{run_date_str}.xlsx"
+
 
     export_dashboard(dashboard, output_file)
 

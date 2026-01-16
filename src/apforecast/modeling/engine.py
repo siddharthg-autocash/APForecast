@@ -138,4 +138,8 @@ def forecast_open_checks(
 
     result_df = pd.DataFrame(results, index=open_df.index)
 
-    return open_df.join(result_df)
+    for col in result_df.columns:
+        open_df[col] = result_df[col]
+
+    return open_df
+

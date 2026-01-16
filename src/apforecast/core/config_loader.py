@@ -34,29 +34,57 @@ def _weekday_rule(target_weekday: str, probability: float = 0.6):
 # ---------------------------------
 # Public Loader
 # ---------------------------------
+# src/apforecast/core/config_loader.py
 
-def load_vendor_overrides(xlsx_path):
+from pathlib import Path
+import pandas as pd
+
+
+def load_vendor_overrides(xlsx_path: Path):
     """
-    Returns:
-        dict[vendor_id -> callable]
+    Load vendor override rules.
+    If file does not exist or is empty, return empty dict.
     """
 
-    df = pd.read_excel(xlsx_path)
+    # no overrides configured
+    if not xlsx_path.exists() or xlsx_path.stat().st_size == 0:
+        return {}
+
+    try:
+        df = pd.read_excel(xlsx_path, engine="openpyxl")
+    except Exception:
+        # invalid or unreadable Excel → treat as no overrides
+        return {}
 
     overrides = {}
 
     for _, row in df.iterrows():
-        vendor_id = row["Vendor_ID"]
-        strategy = row["Strategy"].upper()
+        vendor_id = row.get("Vendor_ID")
+        strategy = str(row.get("Strategy", "")).upper()
         param = row.get("Param_1")
 
+        if not vendor_id or strategy == "DEFAULT":
+            continue
+
         if strategy == "FIXED_LAG":
-            overrides[vendor_id] = _fixed_lag_rule(int(param))
+            lag = int(param)
+            overrides[vendor_id] = lambda age, run_date, lag=lag: (
+                1.0 if age >= lag else 0.0
+            )
 
         elif strategy == "WEEKDAY":
-            overrides[vendor_id] = _weekday_rule(str(param))
-
-        elif strategy == "DEFAULT":
-            continue
+            weekday_map = {
+                "MONDAY": 0,
+                "TUESDAY": 1,
+                "WEDNESDAY": 2,
+                "THURSDAY": 3,
+                "FRIDAY": 4,
+            }
+            target = weekday_map.get(str(param).upper())
+            if target is not None:
+                overrides[vendor_id] = (
+                    lambda age, run_date, t=target: 0.6
+                    if run_date.weekday() == t else 0.0
+                )
 
     return overrides
