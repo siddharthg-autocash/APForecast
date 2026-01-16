@@ -1,4 +1,7 @@
 # src/apforecast/main.py
+
+# python3 -m src.apforecast.main --date 16-01-2026
+
 import argparse
 import pandas as pd
 import os
