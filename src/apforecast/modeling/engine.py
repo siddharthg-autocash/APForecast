@@ -1,4 +1,6 @@
-# src/apforecast/modeling/engine.py
+# ==========================================
+# FILE: ./src/apforecast/modeling/engine.py
+# ==========================================
 import pandas as pd
 import numpy as np
 from src.apforecast.core.constants import *
@@ -39,16 +41,24 @@ class ForecastEngine:
             
         return models
 
-    def predict_check(self, check_row, forecast_date):
+    def predict_check(self, check_row, forecast_date, current_date_override=None):
         """
         Applies Logic Hierarchy: Override -> Specific -> Global
+        
+        current_date_override: Used to simulate "survival conditional on being alive until DATE".
+                               If None, assumes check is being evaluated at forecast_date.
         """
         vendor_id = check_row[COL_VENDOR_ID]
         amount = check_row[COL_AMOUNT]
         post_date = check_row[COL_POST_DATE]
         
         # Calculate current age t
-        age = (forecast_date - post_date).days
+        # If we are simulating "Conditional Probability from Yesterday", we need
+        # to know what "Yesterday" (current_date_override) was to calculate Age.
+        if current_date_override:
+            age = (current_date_override - post_date).days
+        else:
+            age = (forecast_date - post_date).days
         
         # CHECK 1: USER OVERRIDE
         if vendor_id in self.overrides:

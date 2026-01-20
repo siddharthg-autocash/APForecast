@@ -1,62 +1,96 @@
 # src/apforecast/reporting/visuals.py
-import matplotlib.pyplot as plt
-import seaborn as sns
+import plotly.graph_objects as go
+import pandas as pd
 import numpy as np
-import os
-from src.apforecast.core.constants import REPORTS_DIR
+from src.apforecast.core.constants import *
 
-def plot_model_curves(models_dict, run_date_str):
+def plot_box_jitter_history(ledger, vendor_name):
     """
-    Generates a graph for every model (Specific Vendors & Global Cohorts).
-    Saves them in reports/plots/<date>/
+    Plots Historical Payment Behavior using a Box Plot + Jitter Points.
+    - X Axis: Days Taken to Clear
+    - Jitter Points: Individual Checks (Hover for details)
     """
-    plot_dir = f"{REPORTS_DIR}/plots/{run_date_str}"
-    os.makedirs(plot_dir, exist_ok=True)
+    # Filter History
+    history = ledger[
+        (ledger[COL_VENDOR_ID] == vendor_name) & 
+        (ledger['Status'] == 'CLEARED')
+    ].copy()
     
-    # Combine both dictionaries for easy looping
-    all_models = {**models_dict['GLOBAL'], **models_dict['SPECIFIC']}
-    
-    print(f"Generating reference graphs for {len(all_models)} models...")
+    if history.empty:
+        return None
 
-    for name, model in all_models.items():
-        if model.n < 2: continue # Skip if not enough data to plot nicely
-        
-        # 1. Setup Data
-        data = model.sorted_data # The actual historical days to settle
-        
-        # Create a figure with a secondary y-axis
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-        
-        # --- COLOR UPDATE ---
-        # Matches your reference: Burnt Orange bars, Dark Blue line
-        BAR_COLOR = '#E67E22'  # Burnt Orange
-        LINE_COLOR = '#154360' # Dark Slate Blue
-        
-        # 2. Histogram (Orange Bars) - Frequency
-        sns.histplot(data, bins=range(0, int(max(data))+5), color=BAR_COLOR, alpha=0.8, ax=ax1, stat='count', edgecolor=None)
-        ax1.set_ylabel('Frequency (Count of Checks)', color=BAR_COLOR, fontweight='bold')
-        ax1.set_xlabel('Days to Settle', fontweight='bold')
-        ax1.tick_params(axis='y', labelcolor=BAR_COLOR)
-        
-        # 3. CDF Curve (Dark Blue Line) - Probability
-        ax2 = ax1.twinx()
-        
-        # Calculate CDF for plotting
-        x_vals = np.linspace(0, max(data)+5, 100)
-        y_vals = [model.cdf(x) for x in x_vals]
-        
-        ax2.plot(x_vals, y_vals, color=LINE_COLOR, linewidth=3, label='Cumulative Probability')
-        ax2.set_ylabel('Probability (0-100%)', color=LINE_COLOR, fontweight='bold')
-        ax2.set_ylim(0, 1.05)
-        ax2.tick_params(axis='y', labelcolor=LINE_COLOR)
-        
-        # 4. Styling
-        plt.title(f"Behavior Reference: {name}\n(Based on {model.n} historical checks)", fontsize=12)
-        plt.grid(True, alpha=0.2, color='gray', linestyle='--')
-        
-        # Save
-        safe_name = str(name).replace("/", "_").replace(" ", "_")
-        plt.savefig(f"{plot_dir}/{safe_name}.png", dpi=100)
-        plt.close()
-        
-    print(f"Graphs saved in {plot_dir}")
+    # Calculate Days
+    history['Days_Taken'] = (history['Clear_Date'] - history[COL_POST_DATE]).dt.days
+    history = history[history['Days_Taken'] >= 0]
+    
+    fig = go.Figure()
+
+    # 1. Jitter Points (The Individual Checks)
+    fig.add_trace(go.Box(
+        x=history['Days_Taken'],
+        name=vendor_name,
+        boxpoints='all',          # Show all points
+        jitter=0.5,               # Spread them out
+        pointpos=-1.8,            # Place points under the box
+        marker=dict(
+            color='#E67E22',
+            size=6,
+            opacity=0.6
+        ),
+        line=dict(color='#2C3E50'),
+        fillcolor='rgba(230, 126, 34, 0.2)', # Orange tint
+        text=history.apply(
+            lambda r: f"Check #{r[COL_CHECK_ID]}<br>${r[COL_AMOUNT]:,.2f}<br>Posted: {r[COL_POST_DATE].strftime('%Y-%m-%d')}", 
+            axis=1
+        ),
+        hoverinfo='text'
+    ))
+
+    fig.update_layout(
+        title=f"<b>Historical Behavior: {vendor_name}</b><br><sup>Distribution of Days Taken to Clear</sup>",
+        xaxis_title="Days to Clear",
+        yaxis_title="",
+        showlegend=False,
+        height=400,
+        template="plotly_white",
+        margin=dict(l=40, r=40, t=80, b=40)
+    )
+    return fig
+
+def plot_forecast_distribution(open_checks, run_date):
+    """
+    Visualizes the Forecast Risks using Box + Jitter.
+    - X Axis: Vendor Name (or 'Portfolio' if global)
+    - Y Axis: Projected Days Outstanding (Age + Forecast)
+    """
+    # Calculate 'Current Age' for visualization context
+    open_checks['Current_Age'] = (run_date - open_checks[COL_POST_DATE]).dt.days
+    
+    fig = go.Figure()
+    
+    # We plot the 'Current Age' distribution to show Risk Profile
+    fig.add_trace(go.Box(
+        y=open_checks['Current_Age'],
+        name="Outstanding Portfolio",
+        boxpoints='all',
+        jitter=0.5,
+        pointpos=-1.8,
+        marker=dict(color='#3498DB', size=5, opacity=0.5),
+        line=dict(color='#154360'),
+        fillcolor='rgba(52, 152, 219, 0.2)',
+        text=open_checks.apply(
+            lambda r: f"<b>{r[COL_VENDOR_ID]}</b><br>Check #{r[COL_CHECK_ID]}<br>${r[COL_AMOUNT]:,.2f}<br>Age: {r['Current_Age']} days", 
+            axis=1
+        ),
+        hoverinfo='text'
+    ))
+
+    fig.update_layout(
+        title="<b>Outstanding Risk Profile</b><br><sup>Age Distribution of Unpaid Checks (Higher = Older/Riskier)</sup>",
+        yaxis_title="Current Age (Days)",
+        xaxis_title="",
+        showlegend=False,
+        height=500,
+        template="plotly_white"
+    )
+    return fig
