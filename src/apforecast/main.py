@@ -1,62 +1,119 @@
 # src/apforecast/main.py
+"""
+Lightweight programmatic interface for APForecast.
 
-# python3 -m src.apforecast.main --date 16-01-2026
+Provides:
+- forecast_today(run_date_str=None) -> JSON string
+  where run_date_str may be e.g. "2026-01-21" or "21-01-2026" (dayfirst accepted).
+  If None, uses today's date (system local).
+"""
 
-import argparse
+import json
+from datetime import datetime, timedelta
 import pandas as pd
 import os
+
 from src.apforecast.core.constants import *
 from src.apforecast.ingestion.reconciler import ingest_and_reconcile
 from src.apforecast.modeling.engine import ForecastEngine
-from src.apforecast.reporting.dashboard import generate_report
-# --- CHANGE 3: Import Visuals ---
-from src.apforecast.reporting.visuals import plot_model_curves
 
-def main():
-    parser = argparse.ArgumentParser(description="APForecast System")
-    parser.add_argument("--date", type=str, required=True, help="Run date (DD-MM-YYYY)")
-    args = parser.parse_args()
-    
-    run_date_str = args.date
-    run_date = pd.to_datetime(run_date_str, format="%d-%m-%Y")
-    
-    print(f"--- Starting APForecast for {run_date_str} ---")
+def _parse_date(run_date_str):
+    """Return a normalized pd.Timestamp or None if parsing fails."""
+    if run_date_str is None:
+        return pd.Timestamp.today().normalize()
+    # Try flexible parsing (dayfirst True to accept DD-MM-YYYY)
+    d = pd.to_datetime(run_date_str, dayfirst=True, errors='coerce')
+    if pd.isna(d):
+        # final fallback: try ISO
+        try:
+            d = pd.to_datetime(run_date_str)
+        except Exception:
+            return None
+    return d.normalize()
 
-    # 1. Ingest & Reconcile (Now handles .xlsx)
-    ledger = ingest_and_reconcile(run_date_str, run_date)
-    
-    # 2. Initialize Engine (Training)
+def forecast_today(run_date_str: str = None):
+    """
+    Build and return a JSON string with:
+      - date (YYYY-MM-DD)
+      - total_outflow_outstanding (sum of amounts of checks currently OPEN)
+      - predicted_today (sum of expected amounts predicted by model for the run_date)
+      - by_vendor: { vendor_id: { outstanding: X, predicted: Y } }
+
+    Notes:
+    - This function will call ingest_and_reconcile(date_folder_str, run_date_pd).
+      The date folder string used is YYYY-MM-DD (so your daily files should live in data/raw/YYYY-MM-DD/).
+    - If ingestion fails, returns a JSON with "error" key.
+    """
+    run_date_pd = _parse_date(run_date_str)
+    if run_date_pd is None:
+        return json.dumps({"error": "Invalid run_date_str; could not parse."})
+
+    date_folder_str = run_date_pd.strftime("%Y-%m-%d")
+
+    # Ingest / reconcile - may raise; catch and return structured error
+    try:
+        ledger = ingest_and_reconcile(date_folder_str, run_date_pd)
+    except Exception as e:
+        return json.dumps({"error": f"Ingest/Reconcile failed: {str(e)}"})
+
+    # Ensure column names exist
+    if COL_STATUS not in ledger.columns or COL_AMOUNT not in ledger.columns:
+        return json.dumps({"error": f"Missing required columns in ledger: {list(ledger.columns)}"})
+
+    # Initialize engine (no vendor overrides in this branch)
     engine = ForecastEngine(ledger)
-    
-    # --- CHANGE 4: Generate Reference Graphs ---
-    # This will create the PNGs for every vendor/cohort
-    plot_model_curves(engine.models, run_date_str)
-    
-    # 4. Forecast Loop
-    open_checks = ledger[ledger[COL_STATUS] == STATUS_OPEN].copy()
-    print(f"Forecasting for {len(open_checks)} open checks...")
-    
-    results = []
-    for _, row in open_checks.iterrows():
-        prob = engine.predict_check(row, run_date)
-        expected_cash = row[COL_AMOUNT] * prob
-        
-        results.append({
-            COL_CHECK_ID: row[COL_CHECK_ID],
-            COL_VENDOR_ID: row[COL_VENDOR_ID],
-            COL_AMOUNT: row[COL_AMOUNT],
-            COL_POST_DATE: row[COL_POST_DATE],
-            'Probability': round(prob, 4),
-            'Expected_Cash': round(expected_cash, 2)
-        })
-        
-    forecast_df = pd.DataFrame(results)
-    
-    # 5. Report
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-    generate_report(forecast_df, run_date_str)
-    
-    print("--- Process Complete ---")
 
+    # Open checks at run_date: checks with Status == OPEN
+    open_checks = ledger[ledger[COL_STATUS] == STATUS_OPEN].copy()
+
+    # Total outstanding (sum of amounts for open checks)
+    total_outstanding = float(open_checks[COL_AMOUNT].sum()) if not open_checks.empty else 0.0
+
+    # Compute predicted expected cash for run_date (conditional P(Clear on run_date | alive yesterday))
+    predicted_total = 0.0
+    per_vendor = {}
+
+    # iterate rows (safe even if types vary). use current_date_override = run_date - 1 day
+    current_date_override = run_date_pd - pd.Timedelta(days=1)
+
+    for _, row in open_checks.iterrows():
+        try:
+            prob = engine.predict_check(row, run_date_pd, current_date_override=current_date_override)
+        except Exception:
+            # If model fails for a row, treat prediction as 0
+            prob = 0.0
+
+        expected = float(row[COL_AMOUNT]) * float(prob)
+        vendor = str(row.get(COL_VENDOR_ID, "Unknown_Vendor"))
+
+        if vendor not in per_vendor:
+            per_vendor[vendor] = {"outstanding": 0.0, "predicted": 0.0}
+
+        per_vendor[vendor]["outstanding"] += float(row[COL_AMOUNT])
+        per_vendor[vendor]["predicted"] += expected
+
+        predicted_total += expected
+
+    # Round numeric values to 2 decimals for readability
+    for v in per_vendor:
+        per_vendor[v]["outstanding"] = round(per_vendor[v]["outstanding"], 2)
+        per_vendor[v]["predicted"] = round(per_vendor[v]["predicted"], 2)
+
+    payload = {
+        "date": run_date_pd.strftime("%Y-%m-%d"),
+        "total_outflow_outstanding": round(total_outstanding, 2),
+        "predicted_today": round(predicted_total, 2),
+        "by_vendor": per_vendor
+    }
+
+    return json.dumps(payload, indent=2)
+
+# CLI entry: print the JSON for today's forecast (or for passed date)
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="APForecast - forecast_today JSON output")
+    parser.add_argument("--date", type=str, help="Run date (e.g. 2026-01-21 or 21-01-2026). If omitted, uses today.")
+    args = parser.parse_args()
+
+    result = forecast_today(args.date)
+    print(result)
