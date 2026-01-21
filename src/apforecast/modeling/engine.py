@@ -6,9 +6,9 @@ from src.apforecast.modeling.probability import BayesianModel
 from src.apforecast.modeling.cohorts import determine_cohort
 
 class ForecastEngine:
-    def __init__(self, ledger, overrides):
+    def __init__(self, ledger):
         self.ledger = ledger
-        self.overrides = overrides
+        # vendor overrides removed
         self.models = self._train_models()
 
     def _train_models(self):
@@ -54,27 +54,6 @@ class ForecastEngine:
         else:
             current_age = None
 
-        # 0. USER OVERRIDES (Top Priority)
-        if vendor_id in self.overrides:
-            rule = self.overrides[vendor_id]
-            strategy = rule.get('Strategy')
-            p1 = rule.get('Param_1')
-            p2 = rule.get('Param_2')
-
-            # For overrides, use forecast-based semantics:
-            # e.g., FIXED_LAG = probability 1 when forecast_age >= p1
-            if strategy == STRAT_HOLD:
-                return 0.0
-            if strategy == STRAT_PROB_OVERRIDE:
-                return float(p1)
-            if strategy == STRAT_FIXED_LAG:
-                return 1.0 if forecast_age >= int(p1) else 0.0
-            if strategy == STRAT_EXACT_DATE:
-                return 1.0 if pd.to_datetime(forecast_date).normalize() == pd.to_datetime(p1).normalize() else 0.0
-            if strategy == STRAT_WEEKDAY:
-                target_day = str(p1).title()
-                return float(p2) if pd.to_datetime(forecast_date).day_name() == target_day else 0.1
-
         # Helper to get a model for vendor / cohort
         def get_model_for(vendor, amt):
             if vendor in self.models['SPECIFIC']:
@@ -97,8 +76,6 @@ class ForecastEngine:
             # If current_age beyond observed history -> can't compute conditional from specific model
             if current_age > model.max_observed_days:
                 # allow fallback to GLOBAL if SPECIFIC unavailable; try global model
-                # (get_model_for already tried GLOBAL for cohort when SPECIFIC missing)
-                # but if this model is SPECIFIC and it's out-of-range, try global cohort model:
                 cohort_model = self.models['GLOBAL'].get(determine_cohort(amount))
                 if cohort_model and cohort_model.n > 0 and current_age <= cohort_model.max_observed_days:
                     model = cohort_model
@@ -119,3 +96,4 @@ class ForecastEngine:
         # CASE B: Unconditional cumulative (no current_date_override provided)
         # just return empirical CDF at forecast_age
         return max(0.0, min(1.0, model.cdf(forecast_age)))
+

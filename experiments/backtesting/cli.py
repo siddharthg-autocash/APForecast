@@ -7,15 +7,15 @@ from datetime import datetime
 
 # --- PATH HACK (To import 'src') ---
 current_file = os.path.abspath(__file__)
-backtesting_dir = os.path.dirname(current_file) 
-experiments_dir = os.path.dirname(backtesting_dir) 
-project_root = os.path.dirname(experiments_dir) 
+backtesting_dir = os.path.dirname(current_file)
+experiments_dir = os.path.dirname(backtesting_dir)
+project_root = os.path.dirname(experiments_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 # -----------------------------------
 
 # Split imports correctly
-from src.apforecast.core.constants import * from src.apforecast.core.config_loader import load_vendor_overrides
+from src.apforecast.core.constants import *
 from experiments.backtesting.core import run_walk_forward_backtest, plot_backtest_results
 
 def normalize_columns(df):
@@ -122,8 +122,7 @@ def main():
 
     # Run Backtest
     try:
-        overrides = load_vendor_overrides()
-        metrics_df = run_walk_forward_backtest(df, args.start, args.end, overrides)
+        metrics_df = run_walk_forward_backtest(df, args.start, args.end)
         
         if metrics_df.empty:
             print("❌ No results generated.")

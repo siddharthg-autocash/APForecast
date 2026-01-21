@@ -6,12 +6,11 @@ import argparse
 import pandas as pd
 import os
 from src.apforecast.core.constants import *
-from src.apforecast.core.config_loader import load_vendor_overrides
 from src.apforecast.ingestion.reconciler import ingest_and_reconcile
 from src.apforecast.modeling.engine import ForecastEngine
 from src.apforecast.reporting.dashboard import generate_report
 # --- CHANGE 3: Import Visuals ---
-from src.apforecast.reporting.visuals import plot_model_curves 
+from src.apforecast.reporting.visuals import plot_model_curves
 
 def main():
     parser = argparse.ArgumentParser(description="APForecast System")
@@ -26,11 +25,8 @@ def main():
     # 1. Ingest & Reconcile (Now handles .xlsx)
     ledger = ingest_and_reconcile(run_date_str, run_date)
     
-    # 2. Load Config Overrides
-    overrides = load_vendor_overrides()
-    
-    # 3. Initialize Engine (Training)
-    engine = ForecastEngine(ledger, overrides)
+    # 2. Initialize Engine (Training)
+    engine = ForecastEngine(ledger)
     
     # --- CHANGE 4: Generate Reference Graphs ---
     # This will create the PNGs for every vendor/cohort

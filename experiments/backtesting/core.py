@@ -7,10 +7,11 @@ from plotly.subplots import make_subplots
 from src.apforecast.core.constants import *
 from src.apforecast.modeling.engine import ForecastEngine
 
-def run_walk_forward_backtest(full_ledger, start_date, end_date, overrides, vendor_filter=None):
+def run_walk_forward_backtest(full_ledger, start_date, end_date, vendor_filter=None):
     """
     Rolling Backtest Logic.
     - Added 'vendor_filter': If set, runs backtest ONLY for that vendor.
+    - Vendor-overrides removed.
     """
     
     # 1. FORCE STATUS Logic (Fix missing 'CLEARED' labels)
@@ -46,7 +47,7 @@ def run_walk_forward_backtest(full_ledger, start_date, end_date, overrides, vend
             current_date += timedelta(days=1)
             continue
 
-        engine = ForecastEngine(training_data, overrides)
+        engine = ForecastEngine(training_data)
         
         # --- IDENTIFY OPEN CHECKS ---
         open_mask = (full_ledger[COL_POST_DATE] <= current_date) & (full_ledger['Clear_Date'] >= current_date)
@@ -54,7 +55,7 @@ def run_walk_forward_backtest(full_ledger, start_date, end_date, overrides, vend
         
         # --- PREDICT ---
         predicted_cash = 0.0
-        flagged_volume = 0.0 
+        flagged_volume = 0.0
         
         for _, row in daily_open_checks.iterrows():
             age = (current_date - row[COL_POST_DATE]).days
@@ -63,8 +64,8 @@ def run_walk_forward_backtest(full_ledger, start_date, end_date, overrides, vend
                 continue
             
             prob = engine.predict_check(
-                row, 
-                current_date, 
+                row,
+                current_date,
                 current_date_override=current_date - timedelta(days=1)
             )
             predicted_cash += (row[COL_AMOUNT] * prob)
