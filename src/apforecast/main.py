@@ -11,7 +11,6 @@ Provides:
 import json
 from datetime import datetime, timedelta
 import pandas as pd
-import os
 
 from src.apforecast.core.constants import *
 from src.apforecast.ingestion.reconciler import ingest_and_reconcile
@@ -41,8 +40,6 @@ def forecast_today(run_date_str: str = None):
 
     Notes:
     - This function will call ingest_and_reconcile(date_folder_str, run_date_pd).
-      The date folder string used is YYYY-MM-DD (so your daily files should live in data/raw/YYYY-MM-DD/).
-    - If ingestion fails, returns a JSON with "error" key.
     """
     run_date_pd = _parse_date(run_date_str)
     if run_date_pd is None:
@@ -63,17 +60,23 @@ def forecast_today(run_date_str: str = None):
     # Initialize engine (no vendor overrides in this branch)
     engine = ForecastEngine(ledger)
 
-    # Open checks at run_date: checks with Status == OPEN
-    open_checks = ledger[ledger[COL_STATUS] == STATUS_OPEN].copy()
+    # ---------------------------------------------------------
+    # CAUSALITY FILTER (New)
+    # ---------------------------------------------------------
+    # 1. Status must be OPEN
+    # 2. Post Date must be <= Run Date (Cannot predict checks that don't exist yet)
+    mask_open = ledger[COL_STATUS] == STATUS_OPEN
+    mask_date = ledger[COL_POST_DATE] <= run_date_pd
+    
+    open_checks = ledger[mask_open & mask_date].copy()
 
     # Total outstanding (sum of amounts for open checks)
     total_outstanding = float(open_checks[COL_AMOUNT].sum()) if not open_checks.empty else 0.0
 
-    # Compute predicted expected cash for run_date (conditional P(Clear on run_date | alive yesterday))
+    # Compute predicted expected cash for run_date
     predicted_total = 0.0
     per_vendor = {}
 
-    # iterate rows (safe even if types vary). use current_date_override = run_date - 1 day
     current_date_override = run_date_pd - pd.Timedelta(days=1)
 
     for _, row in open_checks.iterrows():
@@ -94,25 +97,42 @@ def forecast_today(run_date_str: str = None):
 
         predicted_total += expected
 
-    # Round numeric values to 2 decimals for readability
-    for v in per_vendor:
-        per_vendor[v]["outstanding"] = round(per_vendor[v]["outstanding"], 2)
-        per_vendor[v]["predicted"] = round(per_vendor[v]["predicted"], 2)
+    # ---------------------------------------------------------
+    # SORTING & FILTERING LOGIC
+    # ---------------------------------------------------------
+    
+    filtered_vendors_list = []
+
+    for v, data in per_vendor.items():
+        p_outstanding = round(data["outstanding"], 2)
+        p_predicted = round(data["predicted"], 2)
+
+        # Only include if there is a predicted cash flow > 0
+        if p_predicted > 0:
+            filtered_vendors_list.append(
+                (v, {"outstanding": p_outstanding, "predicted": p_predicted})
+            )
+
+    # Sort by 'predicted' in descending order
+    filtered_vendors_list.sort(key=lambda item: item[1]["predicted"], reverse=True)
+
+    # Reconstruct dictionary
+    by_vendor_sorted = {v: data for v, data in filtered_vendors_list}
 
     payload = {
         "date": run_date_pd.strftime("%Y-%m-%d"),
         "total_outflow_outstanding": round(total_outstanding, 2),
         "predicted_today": round(predicted_total, 2),
-        "by_vendor": per_vendor
+        "by_vendor": by_vendor_sorted
     }
 
     return json.dumps(payload, indent=2)
 
-# CLI entry: print the JSON for today's forecast (or for passed date)
+# CLI entry
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="APForecast - forecast_today JSON output")
-    parser.add_argument("--date", type=str, help="Run date (e.g. 2026-01-21 or 21-01-2026). If omitted, uses today.")
+    parser.add_argument("--date", type=str, help="Run date (e.g. 2026-01-21). If omitted, uses today.")
     args = parser.parse_args()
 
     result = forecast_today(args.date)
