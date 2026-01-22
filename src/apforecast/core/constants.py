@@ -1,5 +1,10 @@
 # src/apforecast/core/constants.py
 
+import pandas as pd
+import numpy as np
+from pandas.tseries.holiday import USFederalHolidayCalendar
+from pandas.tseries.offsets import CustomBusinessDay
+
 # Paths
 DATA_DIR = "data"
 RAW_DIR = f"{DATA_DIR}/raw"
@@ -11,17 +16,12 @@ MASTER_LEDGER_PATH = f"{PROCESSED_DIR}/master_ledger.parquet"
 CONFIG_FILE_PATH = f"{CONFIG_DIR}/vendor_strategy_overrides.xlsx"
 
 # --- COLUMN MAPPING (CRITICAL) ---
-# Format: "Your_File_Column_Name": "System_Name"
-# UPDATE THE LEFT SIDE to match your CSV headers exactly!
-# src/apforecast/core/constants.py
-
 COLUMN_MAP = {
-    # "YOUR FILE HEADER"   : "SYSTEM INTERNAL NAME" (Do not change right side!)
     "Check #"              : "Check_ID",
     "Reference"            : "Vendor_ID",
     "Amount"               : "Amount",
-    "Post Date"            : "Post_Date",  # Assuming your file header IS "Post_Date"
-    "Cleared Date"           : "Clear_Date"  # Assuming your file header IS "Clear_Date"
+    "Post Date"            : "Post_Date",
+    "Cleared Date"         : "Clear_Date"
 }
 
 # Internal System Column Names (Do Not Change These)
@@ -52,3 +52,58 @@ STRAT_EXACT_DATE = "EXACT_DATE"
 STRAT_HOLD = "HOLD"
 STRAT_PROB_OVERRIDE = "PROBABILITY_OVERRIDE"
 STRAT_DEFAULT = "DEFAULT"
+
+# -----------------------------
+# Business-day helpers (US Federal calendar)
+# -----------------------------
+US_CAL = USFederalHolidayCalendar()
+USB = CustomBusinessDay(calendar=US_CAL)
+
+def _holiday_strings_between(start, end):
+    """Return list of holiday strings 'YYYY-MM-DD' between two dates (inclusive)."""
+    start_ts = pd.to_datetime(start)
+    end_ts = pd.to_datetime(end)
+    if pd.isna(start_ts) or pd.isna(end_ts) or start_ts > end_ts:
+        return []
+    try:
+        hol = US_CAL.holidays(start=start_ts.date(), end=end_ts.date())
+        return [d.strftime("%Y-%m-%d") for d in hol]
+    except Exception:
+        return []
+
+def is_business_day(date):
+    """Return True if `date` is a business day (Mon-Fri and not a US federal holiday)."""
+    dt = pd.to_datetime(date).date()
+    hols = _holiday_strings_between(dt, dt)
+    try:
+        return bool(np.is_busday(np.datetime_as_string(np.datetime64(dt)), holidays=hols))
+    except Exception:
+        # Fallback using CustomBusinessDay
+        return pd.Timestamp(dt) in pd.date_range(pd.Timestamp(dt), pd.Timestamp(dt), freq=USB)
+
+def prev_business_day(date):
+    """Return the previous business day strictly before `date`."""
+    dt = pd.to_datetime(date)
+    return (dt - USB).normalize()
+
+def next_business_day(date):
+    """Return the next business day strictly after `date`."""
+    dt = pd.to_datetime(date)
+    return (dt + USB).normalize()
+
+def business_days_between(start_date, end_date):
+    """
+    Return number of business days between two dates.
+    Definition: number of business-day boundaries crossed going from start_date -> end_date.
+    If start_date >= end_date -> 0.
+    """
+    s = pd.to_datetime(start_date).date()
+    e = pd.to_datetime(end_date).date()
+    if s >= e:
+        return 0
+    hols = _holiday_strings_between(s, e)
+    try:
+        return int(np.busday_count(np.datetime_as_string(np.datetime64(s)), np.datetime_as_string(np.datetime64(e)), holidays=hols))
+    except Exception:
+        rng = pd.date_range(start=pd.Timestamp(s), end=pd.Timestamp(e), freq=USB)
+        return max(0, len(rng) - 1)

@@ -8,7 +8,6 @@ from src.apforecast.modeling.cohorts import determine_cohort
 class ForecastEngine:
     def __init__(self, ledger):
         self.ledger = ledger
-        # vendor overrides removed
         self.models = self._train_models()
 
     def _train_models(self):
@@ -20,37 +19,52 @@ class ForecastEngine:
         valid_vendors = vendor_counts[vendor_counts >= 5].index
         for v_id in valid_vendors:
             data = cleared[cleared[COL_VENDOR_ID] == v_id][COL_DAYS_TO_SETTLE].values
+            data = np.array([int(x) for x in data if pd.notna(x)])
             models['SPECIFIC'][v_id] = BayesianModel(data)
 
         # 2. Train Global Cohorts
         for cohort in [COHORT_SMALL, COHORT_MEDIUM, COHORT_LARGE]:
             mask = cleared[COL_AMOUNT].apply(determine_cohort) == cohort
             data = cleared[mask][COL_DAYS_TO_SETTLE].values
+            data = np.array([int(x) for x in data if pd.notna(x)])
             models['GLOBAL'][cohort] = BayesianModel(data)
-            
+
         return models
-    
+
     def predict_check(self, check_row, forecast_date, current_date_override=None):
         """
-        Returns a probability related to `forecast_date`.
+        Returns a probability for the check to clear on the effective forecast date.
 
-        Behavior:
-        - If `current_date_override` is provided:
-            Return P(Clear on or before forecast_date | still unpaid at current_date_override).
-            (This is a conditional cumulative probability. Marginal for a single day can be
-            computed by differencing two calls with adjacent target dates.)
-        - If `current_date_override` is NOT provided:
-            Return unconditional P(Clear on or before forecast_date) (simple empirical CDF).
+        Key rules:
+        - Ages are measured in business-days (business_days_between).
+        - If forecast_date is a non-business day, the effective forecast becomes the next business day.
+          This preserves probability mass (carry-forward) while not ageing over non-business days.
+        - current_date_override will be normalized to the previous business day (if necessary).
         """
         vendor_id = check_row[COL_VENDOR_ID]
         amount = check_row[COL_AMOUNT]
         post_date = pd.to_datetime(check_row[COL_POST_DATE])
+        forecast_date = pd.to_datetime(forecast_date)
 
-        # compute ages (in days)
-        forecast_age = (pd.to_datetime(forecast_date) - post_date).days
+        # Determine effective forecast date: freeze time over non-business days and carry forward
+        if not is_business_day(forecast_date):
+            effective_forecast_date = next_business_day(forecast_date)
+        else:
+            effective_forecast_date = forecast_date
+
+        # Normalize/adjust current_date_override to previous business day (if provided)
+        if current_date_override is not None:
+            cdo = pd.to_datetime(current_date_override)
+            if not is_business_day(cdo):
+                current_date_override = prev_business_day(cdo)
+            else:
+                current_date_override = cdo
+
+        # compute business-day ages
+        forecast_age = business_days_between(post_date, effective_forecast_date)
 
         if current_date_override is not None:
-            current_age = (pd.to_datetime(current_date_override) - post_date).days
+            current_age = business_days_between(post_date, current_date_override)
         else:
             current_age = None
 
@@ -63,26 +77,23 @@ class ForecastEngine:
 
         model = get_model_for(vendor_id, amount)
 
-        # If no model at all, return 0
         if model is None or model.n == 0:
             return 0.0
 
         # CASE A: Conditional (we know state 'alive' at current_age)
         if current_age is not None:
-            # If forecast is at-or-before the current age, no new probability
+            # If effective forecast is at-or-before the current age, no new probability
             if forecast_age <= current_age:
                 return 0.0
 
-            # If current_age beyond observed history -> can't compute conditional from specific model
+            # If current_age beyond observed history -> try cohort fallback
             if current_age > model.max_observed_days:
-                # allow fallback to GLOBAL if SPECIFIC unavailable; try global model
                 cohort_model = self.models['GLOBAL'].get(determine_cohort(amount))
                 if cohort_model and cohort_model.n > 0 and current_age <= cohort_model.max_observed_days:
                     model = cohort_model
                 else:
                     return 0.0
 
-            # Compute conditional cumulative:
             cdf_current = model.cdf(current_age)
             cdf_forecast = model.cdf(forecast_age)
 
@@ -93,7 +104,5 @@ class ForecastEngine:
             prob_conditional_cum = (cdf_forecast - cdf_current) / denom
             return max(0.0, min(1.0, prob_conditional_cum))
 
-        # CASE B: Unconditional cumulative (no current_date_override provided)
-        # just return empirical CDF at forecast_age
+        # CASE B: Unconditional cumulative
         return max(0.0, min(1.0, model.cdf(forecast_age)))
-
